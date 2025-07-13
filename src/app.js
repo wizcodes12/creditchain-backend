@@ -21,6 +21,7 @@ const errorHandler = require("./middleware/errorHandler")
 
 const app = express()
 
+app.set('trust proxy', true);
 // Connect to MongoDB
 connectDB()
 
@@ -33,10 +34,10 @@ app.use(
   }),
 )
 // Add this near the top of your app.js, before rate limiting
-app.set('trust proxy', 1);
+
 
 // If you're using Railway specifically, you might also want:
-app.set('trust proxy', true);
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: Number.parseInt(process.env.RATE_LIMIT_WINDOW) || 15 * 60 * 1000, // 15 minutes
