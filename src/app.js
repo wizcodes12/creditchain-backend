@@ -21,7 +21,7 @@ const errorHandler = require("./middleware/errorHandler")
 
 const app = express()
 
-app.set('trust proxy', true);
+app.set('trust proxy', 2);
 // Connect to MongoDB
 connectDB()
 
