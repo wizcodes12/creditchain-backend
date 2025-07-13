@@ -1,0 +1,23 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "deployer": "0xEABf5c62E0A36d8306F976A47c067C2a62C51d88",
+  "backendWallet": "0xEABf5c62E0A36d8306F976A47c067C2a62C51d88",
+  "contracts": {
+    "CreditScoreRegistry": {
+      "address": "0x634D9F739f47Cea8f86E7807DceCCDD3A56E51AE",
+      "transactionHash": "0xdd0c934067bc70c8516d0a7628f22e9ed7f8e2aeefc45a07243a0232e48a707b",
+      "blockNumber": null
+    },
+    "UserIdentityRegistry": {
+      "address": "0x5C7520014fafbbfB450166ad5aFAb33C18c95aa4",
+      "transactionHash": "0xe3607e442eaefc2b1b6c99598947e2029b8e4bf25d46a47bce9d5d90265f9f58",
+      "blockNumber": null
+    }
+  },
+  "etherscanUrls": {
+    "CreditScoreRegistry": "https://sepolia.etherscan.io/address/0x634D9F739f47Cea8f86E7807DceCCDD3A56E51AE",
+    "UserIdentityRegistry": "https://sepolia.etherscan.io/address/0x5C7520014fafbbfB450166ad5aFAb33C18c95aa4"
+  },
+  "deploymentTime": "2025-07-12T21:28:17.043Z"
+}

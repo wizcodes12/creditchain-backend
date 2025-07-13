@@ -1,0 +1,31 @@
+# Node dependencies
+node_modules/
+
+# Environment files
+.env
+
+# Logs
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Hardhat build artifacts
+artifacts/
+cache/
+coverage/
+coverage.json
+
+# Hardhat Ignition
+ignition/deployments/
+
+# TypeChain output
+typechain/
+typechain-types/
+
+# System files
+.DS_Store
+
+# Editor configs (optional)
+.vscode/
+.idea/
