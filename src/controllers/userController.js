@@ -305,5 +305,6 @@ class UserController {
   }
 }
 
+// Export an instance of the class, not the class itself
 const userController = new UserController();
 module.exports = userController;
