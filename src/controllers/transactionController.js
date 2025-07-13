@@ -1,480 +1,309 @@
-const Transaction = require("../models/Transaction")
 const User = require("../models/User")
+const FinancialProfile = require("../models/FinancialProfile")
+const Transaction = require("../models/Transaction")
+const dummyDataService = require("../services/dummyDataService")
+const blockchainService = require("../services/blockchainService")
 const logger = require("../utils/logger")
 const CONSTANTS = require("../utils/constants")
 
-class TransactionController {
-  // GET /api/transactions/:userId
-  async getTransactions(req, res) {
+class UserController {
+  // POST /api/user/fetch-details
+  async fetchDetails(req, res) {
+    try {
+      const userId = req.user._id
+      const user = req.user
+
+      logger.info("Fetching user details", { userId })
+
+      // Check if financial profile already exists
+      let financialProfile = await FinancialProfile.findOne({ userId })
+
+      if (financialProfile) {
+        return res.status(CONSTANTS.HTTP_STATUS.OK).json({
+          success: true,
+          message: "Financial profile already exists",
+          financialProfile,
+          transactionCount: await Transaction.countDocuments({ userId }),
+          generatedAt: financialProfile.generatedAt,
+        })
+      }
+
+      // Generate financial profile
+      const profileData = dummyDataService.generateFinancialProfile(user)
+      financialProfile = new FinancialProfile(profileData)
+      await financialProfile.save()
+
+      // Generate transactions
+      const transactionData = dummyDataService.generateTransactions(user, profileData, 75)
+      const transactions = await Transaction.insertMany(transactionData)
+
+      // Generate wallet address for blockchain integration
+      const walletAddress = blockchainService.generateWalletAddress()
+      user.walletAddress = walletAddress
+      user.isVerified = true
+      await user.save()
+
+      logger.info("User details generated successfully", {
+        userId,
+        transactionCount: transactions.length,
+        monthlyIncome: profileData.personalInfo.monthlyIncome,
+      })
+
+      res.status(CONSTANTS.HTTP_STATUS.OK).json({
+        success: true,
+        message: CONSTANTS.MESSAGES.SUCCESS.PROFILE_GENERATED,
+        financialProfile: {
+          personalInfo: financialProfile.personalInfo,
+          existingLoans: financialProfile.existingLoans,
+          creditCards: financialProfile.creditCards,
+          bankAccounts: financialProfile.bankAccounts,
+          alternativeFactors: financialProfile.alternativeFactors,
+          behavioralPatterns: financialProfile.behavioralPatterns,
+          calculatedRatios: financialProfile.calculatedRatios,
+        },
+        transactionCount: transactions.length,
+        walletAddress,
+        generatedAt: financialProfile.generatedAt,
+      })
+    } catch (error) {
+      logger.error("Fetch details error:", error)
+      throw error
+    }
+  }
+
+  // GET /api/user/profile/:userId
+  async getProfile(req, res) {
     try {
       const { userId } = req.params
-      const {
-        page = 1,
-        limit = 20,
-        category,
-        type,
-        startDate,
-        endDate,
-        anomaliesOnly,
-        sortBy = "date",
-        sortOrder = "desc",
-      } = req.query
 
-      // Check if user is accessing their own transactions
-      if (req.user._id.toString() !== userId) {
+      // Check if user is accessing their own profile or is admin
+      if (req.user._id.toString() !== userId && req.user.email !== "admin@creditchain.ai") {
         return res.status(CONSTANTS.HTTP_STATUS.FORBIDDEN).json({
           success: false,
           error: {
             code: CONSTANTS.ERROR_CODES.ACCESS_DENIED,
             message: "Access denied",
-            details: "You can only access your own transactions",
+            details: "You can only access your own profile",
             timestamp: new Date().toISOString(),
           },
         })
       }
 
-      // Build query
-      const query = { userId }
-
-      if (category) query.category = category
-      if (type) query.type = type
-      if (anomaliesOnly === "true") query.isAnomaly = true
-
-      if (startDate || endDate) {
-        query.date = {}
-        if (startDate) query.date.$gte = new Date(startDate)
-        if (endDate) query.date.$lte = new Date(endDate)
-      }
-
-      // Build sort object
-      const sort = {}
-      sort[sortBy] = sortOrder === "asc" ? 1 : -1
-
-      // Execute query with pagination
-      const skip = (page - 1) * limit
-      const transactions = await Transaction.find(query)
-        .sort(sort)
-        .skip(skip)
-        .limit(Number.parseInt(limit))
-        .select(
-          "transactionId amount type category subcategory date description merchant location paymentMethod isAnomaly anomalyScore",
-        )
-
-      const totalCount = await Transaction.countDocuments(query)
-
-      logger.info("Transactions retrieved", {
-        userId,
-        count: transactions.length,
-        filters: { category, type, anomaliesOnly },
-      })
-
-      res.status(CONSTANTS.HTTP_STATUS.OK).json({
-        success: true,
-        transactions,
-        pagination: {
-          page: Number.parseInt(page),
-          limit: Number.parseInt(limit),
-          total: totalCount,
-          pages: Math.ceil(totalCount / limit),
-          hasMore: skip + transactions.length < totalCount,
-        },
-        filters: {
-          category,
-          type,
-          startDate,
-          endDate,
-          anomaliesOnly: anomaliesOnly === "true",
-        },
-      })
-    } catch (error) {
-      logger.error("Get transactions error:", error)
-      throw error
-    }
-  }
-
-  // GET /api/transactions/anomalies/:userId
-  async getAnomalousTransactions(req, res) {
-    try {
-      const { userId } = req.params
-      const { page = 1, limit = 20, riskLevel } = req.query
-
-      // Check if user is accessing their own transactions
-      if (req.user._id.toString() !== userId) {
-        return res.status(CONSTANTS.HTTP_STATUS.FORBIDDEN).json({
-          success: false,
-          error: {
-            code: CONSTANTS.ERROR_CODES.ACCESS_DENIED,
-            message: "Access denied",
-            details: "You can only access your own transactions",
-            timestamp: new Date().toISOString(),
-          },
-        })
-      }
-
-      // Build query for anomalous transactions
-      const query = { userId, isAnomaly: true }
-
-      // Execute query with pagination
-      const skip = (page - 1) * limit
-      const anomalies = await Transaction.find(query)
-        .sort({ anomalyScore: -1, date: -1 })
-        .skip(skip)
-        .limit(Number.parseInt(limit))
-        .select("transactionId amount type category date merchant anomalyScore location paymentMethod description")
-
-      const totalCount = await Transaction.countDocuments(query)
-
-      // Calculate summary statistics
-      const summary = await this.calculateAnomalySummary(userId)
-
-      logger.info("Anomalous transactions retrieved", {
-        userId,
-        count: anomalies.length,
-        totalAnomalies: totalCount,
-      })
-
-      res.status(CONSTANTS.HTTP_STATUS.OK).json({
-        success: true,
-        anomalies: anomalies.map((transaction) => ({
-          transactionId: transaction.transactionId,
-          amount: transaction.amount,
-          type: transaction.type,
-          category: transaction.category,
-          date: transaction.date,
-          merchant: transaction.merchant,
-          anomalyScore: transaction.anomalyScore,
-          fraudRisk: this.calculateFraudRisk(transaction.anomalyScore),
-          location: transaction.location,
-          paymentMethod: transaction.paymentMethod,
-          description: transaction.description,
-        })),
-        summary,
-        pagination: {
-          page: Number.parseInt(page),
-          limit: Number.parseInt(limit),
-          total: totalCount,
-          pages: Math.ceil(totalCount / limit),
-        },
-      })
-    } catch (error) {
-      logger.error("Get anomalous transactions error:", error)
-      throw error
-    }
-  }
-
-  // GET /api/transactions/analytics/:userId
-  async getTransactionAnalytics(req, res) {
-    try {
-      const { userId } = req.params
-      const { period = "6months" } = req.query
-
-      // Check if user is accessing their own analytics
-      if (req.user._id.toString() !== userId) {
-        return res.status(CONSTANTS.HTTP_STATUS.FORBIDDEN).json({
-          success: false,
-          error: {
-            code: CONSTANTS.ERROR_CODES.ACCESS_DENIED,
-            message: "Access denied",
-            details: "You can only access your own analytics",
-            timestamp: new Date().toISOString(),
-          },
-        })
-      }
-
-      // Calculate date range based on period
-      const endDate = new Date()
-      const startDate = new Date()
-      switch (period) {
-        case "1month":
-          startDate.setMonth(startDate.getMonth() - 1)
-          break
-        case "3months":
-          startDate.setMonth(startDate.getMonth() - 3)
-          break
-        case "6months":
-          startDate.setMonth(startDate.getMonth() - 6)
-          break
-        case "1year":
-          startDate.setFullYear(startDate.getFullYear() - 1)
-          break
-        default:
-          startDate.setMonth(startDate.getMonth() - 6)
-      }
-
-      // Spending by category
-      const spendingByCategory = await Transaction.aggregate([
-        {
-          $match: {
-            userId: userId,
-            type: "debit",
-            date: { $gte: startDate, $lte: endDate },
-          },
-        },
-        {
-          $group: {
-            _id: "$category",
-            totalAmount: { $sum: "$amount" },
-            count: { $sum: 1 },
-            avgAmount: { $avg: "$amount" },
-          },
-        },
-        { $sort: { totalAmount: -1 } },
-      ])
-
-      // Monthly spending trend
-      const monthlySpending = await Transaction.aggregate([
-        {
-          $match: {
-            userId: userId,
-            type: "debit",
-            date: { $gte: startDate, $lte: endDate },
-          },
-        },
-        {
-          $group: {
-            _id: {
-              year: { $year: "$date" },
-              month: { $month: "$date" },
-            },
-            totalAmount: { $sum: "$amount" },
-            count: { $sum: 1 },
-          },
-        },
-        { $sort: { "_id.year": 1, "_id.month": 1 } },
-      ])
-
-      // Payment method distribution
-      const paymentMethodDistribution = await Transaction.aggregate([
-        {
-          $match: {
-            userId: userId,
-            date: { $gte: startDate, $lte: endDate },
-          },
-        },
-        {
-          $group: {
-            _id: "$paymentMethod",
-            count: { $sum: 1 },
-            totalAmount: { $sum: "$amount" },
-          },
-        },
-        { $sort: { count: -1 } },
-      ])
-
-      // Transaction patterns
-      const hourlyPattern = await Transaction.aggregate([
-        {
-          $match: {
-            userId: userId,
-            date: { $gte: startDate, $lte: endDate },
-          },
-        },
-        {
-          $group: {
-            _id: "$hourOfDay",
-            count: { $sum: 1 },
-            avgAmount: { $avg: "$amount" },
-          },
-        },
-        { $sort: { _id: 1 } },
-      ])
-
-      // Anomaly trends
-      const anomalyTrends = await Transaction.aggregate([
-        {
-          $match: {
-            userId: userId,
-            date: { $gte: startDate, $lte: endDate },
-          },
-        },
-        {
-          $group: {
-            _id: {
-              year: { $year: "$date" },
-              month: { $month: "$date" },
-            },
-            totalTransactions: { $sum: 1 },
-            anomalousTransactions: {
-              $sum: { $cond: [{ $eq: ["$isAnomaly", true] }, 1, 0] },
-            },
-            avgAnomalyScore: {
-              $avg: { $cond: [{ $eq: ["$isAnomaly", true] }, "$anomalyScore", null] },
-            },
-          },
-        },
-        { $sort: { "_id.year": 1, "_id.month": 1 } },
-      ])
-
-      logger.info("Transaction analytics retrieved", {
-        userId,
-        period,
-        categoriesCount: spendingByCategory.length,
-      })
-
-      res.status(CONSTANTS.HTTP_STATUS.OK).json({
-        success: true,
-        analytics: {
-          period,
-          dateRange: { startDate, endDate },
-          spendingByCategory,
-          monthlySpending,
-          paymentMethodDistribution,
-          hourlyPattern,
-          anomalyTrends,
-        },
-      })
-    } catch (error) {
-      logger.error("Get transaction analytics error:", error)
-      throw error
-    }
-  }
-
-  // GET /api/transactions/details/:transactionId
-  async getTransactionDetails(req, res) {
-    try {
-      const { transactionId } = req.params
-
-      const transaction = await Transaction.findOne({ transactionId })
-
-      if (!transaction) {
+      const user = await User.findById(userId).select("-password")
+      if (!user) {
         return res.status(CONSTANTS.HTTP_STATUS.NOT_FOUND).json({
           success: false,
           error: {
-            code: "TRANSACTION_NOT_FOUND",
-            message: "Transaction not found",
-            details: "No transaction found with the provided ID",
+            code: CONSTANTS.ERROR_CODES.USER_NOT_FOUND,
+            message: "User not found",
+            details: "No user found with the provided ID",
             timestamp: new Date().toISOString(),
           },
         })
       }
 
-      // Check if user owns this transaction
-      if (req.user._id.toString() !== transaction.userId.toString()) {
+      const financialProfile = await FinancialProfile.findOne({ userId })
+
+      // Get transaction summary
+      const transactionSummary = await this.getTransactionSummary(userId)
+
+      logger.info("User profile retrieved", { userId })
+
+      res.status(CONSTANTS.HTTP_STATUS.OK).json({
+        success: true,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          isVerified: user.isVerified,
+          walletAddress: user.walletAddress,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
+        },
+        financialProfile,
+        transactionSummary,
+      })
+    } catch (error) {
+      logger.error("Get profile error:", error)
+      throw error
+    }
+  }
+
+  // PUT /api/user/profile/:userId
+  async updateProfile(req, res) {
+    try {
+      const { userId } = req.params
+      const { name, phone } = req.body
+
+      // Check if user is updating their own profile
+      if (req.user._id.toString() !== userId) {
         return res.status(CONSTANTS.HTTP_STATUS.FORBIDDEN).json({
           success: false,
           error: {
             code: CONSTANTS.ERROR_CODES.ACCESS_DENIED,
             message: "Access denied",
-            details: "You can only access your own transactions",
+            details: "You can only update your own profile",
             timestamp: new Date().toISOString(),
           },
         })
       }
 
-      logger.info("Transaction details retrieved", {
-        transactionId,
-        userId: transaction.userId,
-      })
+      const user = await User.findById(userId)
+      if (!user) {
+        return res.status(CONSTANTS.HTTP_STATUS.NOT_FOUND).json({
+          success: false,
+          error: {
+            code: CONSTANTS.ERROR_CODES.USER_NOT_FOUND,
+            message: "User not found",
+            details: "No user found with the provided ID",
+            timestamp: new Date().toISOString(),
+          },
+        })
+      }
+
+      // Update allowed fields
+      if (name) user.name = name
+      if (phone) user.phone = phone
+
+      await user.save()
+
+      logger.info("User profile updated", { userId })
 
       res.status(CONSTANTS.HTTP_STATUS.OK).json({
         success: true,
-        transaction: {
-          transactionId: transaction.transactionId,
-          amount: transaction.amount,
-          type: transaction.type,
-          category: transaction.category,
-          subcategory: transaction.subcategory,
-          date: transaction.date,
-          description: transaction.description,
-          merchant: transaction.merchant,
-          location: transaction.location,
-          paymentMethod: transaction.paymentMethod,
-          balanceAfterTransaction: transaction.balanceAfterTransaction,
-          isAnomaly: transaction.isAnomaly,
-          anomalyScore: transaction.anomalyScore,
-          fraudRisk: this.calculateFraudRisk(transaction.anomalyScore),
-          isWeekend: transaction.isWeekend,
-          isLateNight: transaction.isLateNight,
-          hourOfDay: transaction.hourOfDay,
-          dayOfWeek: transaction.dayOfWeek,
-          createdAt: transaction.createdAt,
+        message: CONSTANTS.MESSAGES.SUCCESS.USER_UPDATED,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          isVerified: user.isVerified,
+          walletAddress: user.walletAddress,
+          updatedAt: user.updatedAt,
         },
       })
     } catch (error) {
-      logger.error("Get transaction details error:", error)
+      logger.error("Update profile error:", error)
       throw error
     }
   }
 
-  // Helper method to calculate anomaly summary
-  async calculateAnomalySummary(userId) {
+  // GET /api/user/dashboard/:userId
+  async getDashboard(req, res) {
     try {
-      const totalAnomalies = await Transaction.countDocuments({
-        userId,
-        isAnomaly: true,
-      })
+      const { userId } = req.params
 
-      const anomalyStats = await Transaction.aggregate([
-        { $match: { userId: userId, isAnomaly: true } },
-        {
-          $group: {
-            _id: null,
-            avgAnomalyScore: { $avg: "$anomalyScore" },
-            maxAnomalyScore: { $max: "$anomalyScore" },
-            minAnomalyScore: { $min: "$anomalyScore" },
+      // Check if user is accessing their own dashboard
+      if (req.user._id.toString() !== userId) {
+        return res.status(CONSTANTS.HTTP_STATUS.FORBIDDEN).json({
+          success: false,
+          error: {
+            code: CONSTANTS.ERROR_CODES.ACCESS_DENIED,
+            message: "Access denied",
+            details: "You can only access your own dashboard",
+            timestamp: new Date().toISOString(),
           },
-        },
-      ])
-
-      // Calculate risk level distribution
-      const riskDistribution = await Transaction.aggregate([
-        { $match: { userId: userId, isAnomaly: true } },
-        {
-          $group: {
-            _id: {
-              $switch: {
-                branches: [
-                  { case: { $gte: ["$anomalyScore", 80] }, then: "critical" },
-                  { case: { $gte: ["$anomalyScore", 60] }, then: "high" },
-                  { case: { $gte: ["$anomalyScore", 40] }, then: "medium" },
-                ],
-                default: "low",
-              },
-            },
-            count: { $sum: 1 },
-          },
-        },
-      ])
-
-      const riskCounts = {
-        critical: 0,
-        high: 0,
-        medium: 0,
-        low: 0,
+        })
       }
 
-      riskDistribution.forEach((item) => {
-        riskCounts[item._id] = item.count
-      })
+      const user = await User.findById(userId).select("-password")
+      const financialProfile = await FinancialProfile.findOne({ userId })
 
-      return {
-        totalAnomalies,
-        highRiskCount: riskCounts.critical + riskCounts.high,
-        mediumRiskCount: riskCounts.medium,
-        lowRiskCount: riskCounts.low,
-        avgAnomalyScore: anomalyStats[0]?.avgAnomalyScore || 0,
-        maxAnomalyScore: anomalyStats[0]?.maxAnomalyScore || 0,
+      if (!user.isVerified || !financialProfile) {
+        return res.status(CONSTANTS.HTTP_STATUS.BAD_REQUEST).json({
+          success: false,
+          error: {
+            code: CONSTANTS.ERROR_CODES.USER_NOT_VERIFIED,
+            message: "User not verified",
+            details: "Please complete profile generation first",
+            timestamp: new Date().toISOString(),
+          },
+        })
       }
+
+      // Get transaction summary
+      const transactionSummary = await this.getTransactionSummary(userId)
+
+      // Get recent transactions
+      const recentTransactions = await Transaction.find({ userId })
+        .sort({ date: -1 })
+        .limit(10)
+        .select("transactionId amount type category date merchant isAnomaly anomalyScore")
+
+      // Get spending by category
+      const spendingByCategory = await Transaction.aggregate([
+        { $match: { userId: user._id, type: "debit" } },
+        { $group: { _id: "$category", totalAmount: { $sum: "$amount" }, count: { $sum: 1 } } },
+        { $sort: { totalAmount: -1 } },
+      ])
+
+      logger.info("Dashboard data retrieved", { userId })
+
+      res.status(CONSTANTS.HTTP_STATUS.OK).json({
+        success: true,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          isVerified: user.isVerified,
+          walletAddress: user.walletAddress,
+        },
+        financialProfile: {
+          monthlyIncome: financialProfile.personalInfo.monthlyIncome,
+          monthlyExpenses: financialProfile.personalInfo.monthlyExpenses,
+          creditUtilization: financialProfile.creditCards.currentUtilization,
+          totalLoans: financialProfile.existingLoans.totalAmount,
+        },
+        transactionSummary,
+        recentTransactions,
+        spendingByCategory,
+      })
     } catch (error) {
-      logger.error("Error calculating anomaly summary:", error)
-      return {
-        totalAnomalies: 0,
-        highRiskCount: 0,
-        mediumRiskCount: 0,
-        lowRiskCount: 0,
-        avgAnomalyScore: 0,
-        maxAnomalyScore: 0,
-      }
+      logger.error("Get dashboard error:", error)
+      throw error
     }
   }
 
-  // Helper method to calculate fraud risk level
-  calculateFraudRisk(anomalyScore) {
-    if (anomalyScore >= 80) return "critical"
-    if (anomalyScore >= 60) return "high"
-    if (anomalyScore >= 40) return "medium"
-    return "low"
+  // Helper method to get transaction summary
+  async getTransactionSummary(userId) {
+    try {
+      const totalCount = await Transaction.countDocuments({ userId })
+
+      const last30Days = new Date()
+      last30Days.setDate(last30Days.getDate() - 30)
+      const last30DaysCount = await Transaction.countDocuments({
+        userId,
+        date: { $gte: last30Days },
+      })
+
+      const totalAmountResult = await Transaction.aggregate([
+        { $match: { userId: userId } },
+        { $group: { _id: null, totalAmount: { $sum: "$amount" } } },
+      ])
+
+      const avgAmountResult = await Transaction.aggregate([
+        { $match: { userId: userId } },
+        { $group: { _id: null, avgAmount: { $avg: "$amount" } } },
+      ])
+
+      return {
+        totalCount,
+        last30Days: last30DaysCount,
+        totalAmount: totalAmountResult[0]?.totalAmount || 0,
+        avgAmount: Math.round(avgAmountResult[0]?.avgAmount || 0),
+      }
+    } catch (error) {
+      logger.error("Error getting transaction summary:", error)
+      return {
+        totalCount: 0,
+        last30Days: 0,
+        totalAmount: 0,
+        avgAmount: 0,
+      }
+    }
   }
 }
 
-module.exports = new TransactionController()
+// Export the class itself, not an instance
+module.exports = UserController
